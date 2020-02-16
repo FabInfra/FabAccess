@@ -1,6 +1,6 @@
 // module needs to be top level for generated functions to be in scope:
 // https://github.com/capnproto/capnproto-rust/issues/16
-pub(crate) mod api_capnp {
+pub(crate) mod api {
     include!(concat!(env!("OUT_DIR"), "/schema/api_capnp.rs"));
 }
 
@@ -14,28 +14,34 @@ use casbin::MgmtApi;
 use crate::machine::{MachineDB, Machine, Status, save};
 use crate::auth::Authentication;
 
+use capnp::{Error};
+use capnp_rpc::RpcSystem;
+use capnp_rpc::twoparty::VatNetwork;
+use capnp_rpc::rpc_twoparty_capnp::Side;
+
+use api::diflouroborane;
+
 pub fn init() {
 }
 
 pub async fn process_socket(e: Mutable<Enforcer>, m: Mutable<MachineDB>, a: Authentication, socket: TcpStream) 
-    -> Result<(), capnp::Error> 
+    -> Result<(), Error> 
 {
-    let auth = api_capnp::authentication::ToClient::new(a).into_client::<::capnp_rpc::Server>();
+    let auth = api::authentication::ToClient::new(a).into_client::<capnp_rpc::Server>();
     let api = Api { e, m, auth };
-    let a = api_capnp::bffh_admin::ToClient::new(api).into_client::<::capnp_rpc::Server>();
-    let netw = capnp_rpc::twoparty::VatNetwork::new(socket.clone(), socket,
-        capnp_rpc::rpc_twoparty_capnp::Side::Server, Default::default());
-    let rpc = capnp_rpc::RpcSystem::new(Box::new(netw), Some(a.clone().client));
+    let a = api::diflouroborane::ToClient::new(api).into_client::<capnp_rpc::Server>();
+    let netw = VatNetwork::new(socket.clone(), socket, Side::Server, Default::default());
+    let rpc = RpcSystem::new(Box::new(netw), Some(a.clone().client));
     rpc.await
 }
 
 struct Api {
     e: Mutable<Enforcer>,
     m: Mutable<MachineDB>,
-    auth: api_capnp::authentication::Client,
+    auth: api::authentication::Client,
 }
 
-impl api_capnp::bffh_admin::Server for Api {
+impl diflouroborane::Server for Api {
     fn get_all_subjects(&mut self,
         _params: api_capnp::bffh_admin::GetAllSubjectsParams,
         mut results: api_capnp::bffh_admin::GetAllSubjectsResults)
