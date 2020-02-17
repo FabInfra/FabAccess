@@ -149,7 +149,7 @@ impl api::authentication::Server for Authentication {
         let mechanism = pry!(params.get_mechanism());
         match mechanism {
             "PLAIN" => {
-                use api::maybe::Which;
+                use api::authentication::maybe_data::Which;
 
                 let data = pry!(params.get_initial_data());
                 if let Ok(Which::Some(data)) = data.which() {
@@ -165,8 +165,8 @@ impl api::authentication::Server for Authentication {
                         results
                             .get()
                             .init_response()
-                            .set_right(api::authentication::outcome::ToClient::new(outcome)
-                                .into_client::<::capnp_rpc::Server>()).unwrap();
+                            .set_outcome(api::authentication::outcome::ToClient::new(outcome)
+                                .into_client::<::capnp_rpc::Server>());
                     }
                     ::capnp::capability::Promise::ok(())
                 } else {

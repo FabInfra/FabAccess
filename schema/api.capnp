@@ -43,26 +43,6 @@ interface Diflouroborane {
     # TODO Capability transfer system, required for machine takeover, session resumption.
 }
 
-struct Maybe(Value) {
-    # An optional value, i.e. a value which is either explicity present or explicity not present.
-    # Similar to `Maybe` in Haskell and `Option` in OCaml or Rust
-    union {
-        some @0 :Value;
-        none @1 :Void;
-    }
-}
-
-struct Either(Left, Right) {
-    # Sum type over two values. A more general type than Rust's `Result` type.
-    # If this type is used to convey the result of a possibly failed computation the `Left` type
-    # shall be used for the error while the `Right` type shall be the value. (Mnemonic: 'right' also
-    # means 'correct')
-    union {
-        left @0 :Left;
-        right @1 :Right;
-    }
-}
-
 struct UUID {
     lsg @0 :UInt64; # least significant
     msg @1 :UInt64; # most significant
@@ -106,22 +86,36 @@ interface Authentication {
     availableMechanisms @0 () -> ( mechanisms :List(Text) );
 
     # Start authentication using the given mechanism and optional initial data
-    initializeAuthentication @1 ( mechanism :Text, initialData :Maybe(Data) )
-        -> (response :Either (Challenge, Outcome) );
+    initializeAuthentication @1 ( mechanism :Text, initialData :MaybeData )
+        -> (response :StepResult );
 
     getAuthzid @2 () -> ( authzid :Text );
 
+    struct StepResult {
+        union {
+            challenge @0 :Challenge;
+            outcome @1 :Outcome;
+        }
+    }
+
+    struct MaybeData {
+        union {
+            some @0 :Data;
+            none @1 :Void;
+        }
+    }
+
     interface Challenge {
         # Access the challenge data
-        read @0 () -> ( data :Maybe(Data) );
+        read @0 () -> ( data :MaybeData );
 
-        respond @1 ( data :Maybe(Data) ) 
-            -> ( response :Either (Challenge, Outcome) );
+        respond @1 ( data :MaybeData ) 
+            -> ( response :StepResult );
     }
 
     interface Outcome {
         # Outcomes may contain additional data
-        read @0 () -> ( data :Maybe(Data) );
+        read @0 () -> ( data :MaybeData );
         # The actual outcome.
         value @1 () -> ( granted :Bool );
     }
