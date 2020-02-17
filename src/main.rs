@@ -55,6 +55,8 @@ fn main() {
 
     let addr = args[1].to_socket_addrs().unwrap().next().expect("could not parse address");
 
+    let permlog = log.new(o!());
+    let machlog = log.new(o!());
 
     let spawner = exec.spawner();
     let result: Result<(), Box<dyn std::error::Error>> = exec.run_until(async move {
@@ -64,8 +66,8 @@ fn main() {
             let socket = socket?;
             // TODO: Prettify session handling
             let auth = auth::Authentication::new(authp.clone());
-            let perm = access::Permissions::new(enf.clone(), auth.clone());
-            let mach = machine::Machines::new(m.clone(), perm.clone());
+            let perm = access::Permissions::new(permlog.clone(), enf.clone(), auth.clone());
+            let mach = machine::Machines::new(machlog.clone(), m.clone(), perm.clone());
 
             let rpc_system = api::process_socket(auth, perm, mach, socket);
             spawner.spawn_local_obj(

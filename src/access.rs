@@ -1,6 +1,8 @@
 //! Access control logic
 //!
 
+use slog::Logger;
+
 use casbin::prelude::*;
 
 use super::config::Config;
@@ -13,19 +15,26 @@ use crate::error::Result;
 
 #[derive(Clone)]
 pub struct Permissions {
+    log: Logger,
     pdb: Mutable<Enforcer>,
     auth: Authentication,
 }
 
 impl Permissions {
-    pub fn new(pdb: Mutable<Enforcer>, auth: Authentication) -> Self {
-        Self { pdb, auth }
+    pub fn new(log: Logger, pdb: Mutable<Enforcer>, auth: Authentication) -> Self {
+        Self { log, pdb, auth }
     }
 
     pub fn enforce(&self, object: &str, action: &str) -> bool {
         if let Some(actor) = self.auth.get_authzid() {
-            self.pdb.lock_ref().enforce(vec![&actor,object,action]).unwrap()
+            trace!(self.log, "Checking permission {} for {} on {}", action, actor, object);
+            let r = self.pdb.lock_ref().enforce(vec![&actor,object,action]).unwrap();
+            if !r {
+                info!(self.log, "Failed permission {} for {} on {}", action, actor, object);
+            }
+            return r;
         } else {
+            info!(self.log, "Attempted anonymous access: {} on {}", action, object);
             false
         }
     }

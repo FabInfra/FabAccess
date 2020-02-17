@@ -64,11 +64,13 @@ impl api::machines::Server for Machines {
                 let mut b = results.get();
                 let mngr = api::machines::manage::ToClient::new(manager).into_client::<Server>();
                 b.set_manage(mngr);
+                trace!(self.log, "Granted manage on machine {}", uuid);
                 Promise::ok(())
             } else {
                 Promise::err(Error::failed("Permission denied".to_string()))
             }
         } else {
+            info!(self.log, "Attempted manage on invalid machine {}", uuid);
             Promise::err(Error::failed("No such machine".to_string()))
         }
     }
@@ -84,8 +86,10 @@ impl api::machines::Server for Machines {
 
         let mdb = self.mdb.lock_ref();
         if let Some(m) = mdb.get(&uuid) {
+            trace!(self.log, "Granted use on machine {}", uuid);
             Promise::ok(())
         } else {
+            info!(self.log, "Attempted use on invalid machine {}", uuid);
             Promise::err(Error::failed("No such machine".to_string()))
         }
     }
