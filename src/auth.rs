@@ -9,6 +9,7 @@ use std::error::Error;
 use std::path::Path;
 use std::fs::File;
 use std::io::{Read, Write};
+use std::ops::Deref;
 
 use futures_signals::signal::Mutable;
 use casbin::Enforcer;
@@ -50,7 +51,7 @@ pub fn open_passdb(path: &Path) -> Option<PassDB> {
 }
 
 #[derive(Clone)]
-struct Plain {
+pub struct Plain {
     // FIXME: I don't want to store passwords.
     passdb: Mutable<PassDB>,
     enforcer: Mutable<Enforcer>,
@@ -102,16 +103,14 @@ pub fn split_nul(string: &str) -> Option<(&str, &str, &str)> {
     Some((a,b,c))
 }
 
-#[derive(Clone)]
-pub struct Authentication {
-    state: Option<String>,
-    plain: Plain,
+
+pub struct AuthenticationProvider {
+    pub plain: Plain,
 }
 
-impl Authentication {
+impl AuthenticationProvider {
     pub fn new(passdb: Mutable<PassDB>, enforcer: Mutable<Enforcer>) -> Self {
-        Authentication {
-            state: None,
+        Self {
             plain: Plain { passdb, enforcer }
         }
     }
@@ -120,6 +119,29 @@ impl Authentication {
         vec!["PLAIN"]
     }
 }
+
+#[derive(Clone)]
+pub struct Authentication {
+    state: Mutable<Option<String>>,
+    provider: Mutable<AuthenticationProvider>,
+}
+impl Authentication {
+    pub fn new(provider: Mutable<AuthenticationProvider>) -> Self {
+        Self {
+            state: Mutable::new(None),
+            provider: provider,
+        }
+    }
+
+    pub fn get_authzid(&self) -> Option<String> {
+        self.state.lock_ref().clone()
+    }
+
+    pub fn mechs(&self) -> Vec<&'static str> {
+        self.provider.lock_ref().mechs()
+    }
+}
+
 
 use crate::api::api;
 
@@ -154,11 +176,11 @@ impl api::authentication::Server for Authentication {
                 let data = pry!(params.get_initial_data());
                 if let Ok(Which::Some(data)) = data.which() {
                     let data = pry!(data);
-                    if let Ok((b, name)) = self.plain.step(data) {
+                    if let Ok((b, name)) = self.provider.lock_ref().plain.step(data) {
 
                         // If login was successful, also set the current authzid
                         if b {
-                            self.state = Some(name.to_string());
+                            self.state.lock_mut().replace(name.to_string());
                         }
 
                         let outcome = Outcome::value(b);
@@ -188,7 +210,7 @@ impl api::authentication::Server for Authentication {
         mut results: api::authentication::GetAuthzidResults)
         -> ::capnp::capability::Promise<(), ::capnp::Error>
     {
-        if let Some(zid) = &self.state {
+        if let Some(zid) = self.state.lock_ref().deref() {
             results.get().set_authzid(zid);
         } else {
             results.get().set_authzid("");

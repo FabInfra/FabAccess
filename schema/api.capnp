@@ -44,8 +44,18 @@ interface Diflouroborane {
 }
 
 struct UUID {
-    lsg @0 :UInt64; # least significant
-    msg @1 :UInt64; # most significant
+    # UUID type used to identify machines.
+    # Since the exact value has no meaning the encoding rules are not too relevant, but it is
+    # paramount that you are consistent when encoding and decoding this type.
+    #
+    # Consider using this algorithm for assembling the 128-bit integer:
+    #   uint128_t uuid = (uuid1 << 64) + uuid0;
+    # And then respectively this code for deconstructing it:
+    #   uint64_t uuid0 = (uint64_t num);
+    #   uint64_t uuid1 = (uint64_t (num >> 64));
+
+    uuid0 @0 :UInt64;
+    uuid1 @1 :UInt64;
 }
 
 interface Machines {

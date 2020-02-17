@@ -13,8 +13,6 @@ mod config;
 mod error;
 mod machine;
 
-use std::ops::Deref;
-
 use api::api as api_capnp;
 
 use futures::prelude::*;
@@ -45,10 +43,8 @@ fn main() {
 
     let p = auth::open_passdb(&config.passdb).unwrap();
     let p = Mutable::new(p);
-    let auth = auth::Authentication::new(p, enf.clone());
-
-    let perm = access::Permissions;
-    let mach = machine::Machines;
+    let authp = auth::AuthenticationProvider::new(p, enf.clone());
+    let authp = Mutable::new(authp);
 
     use std::net::ToSocketAddrs;
     let args: Vec<String> = ::std::env::args().collect();
@@ -66,8 +62,12 @@ fn main() {
         let mut incoming = listener.incoming();
         while let Some(socket) = incoming.next().await {
             let socket = socket?;
-            let rpc_system = api::process_socket(auth.clone(), perm.clone(), mach.clone(), socket);
-            machine::save(&config, &m.lock_ref()).expect("MachineDB save");
+            // TODO: Prettify session handling
+            let auth = auth::Authentication::new(authp.clone());
+            let perm = access::Permissions::new(enf.clone(), auth.clone());
+            let mach = machine::Machines::new(m.clone(), perm.clone());
+
+            let rpc_system = api::process_socket(auth, perm, mach, socket);
             spawner.spawn_local_obj(
                 Box::pin(rpc_system.map_err(|e| println!("error: {:?}", e)).map(|_|())).into()).expect("spawn")
         }

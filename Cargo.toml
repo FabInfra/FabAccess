@@ -27,5 +27,7 @@ serde = { version = "1.0", features = ["derive"] }
 
 casbin = "0.2"
 
+uuid = { version = "0.8", features = ["serde", "v4"] }
+
 [build-dependencies]
 capnpc = "0.12"
