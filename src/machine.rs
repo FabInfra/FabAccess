@@ -86,12 +86,63 @@ impl api::machines::Server for Machines {
 
         let mdb = self.mdb.lock_ref();
         if let Some(m) = mdb.get(&uuid) {
-            trace!(self.log, "Granted use on machine {}", uuid);
-            Promise::ok(())
+            match m.status {
+                Status::Free => {
+                    trace!(self.log, "Granted use on machine {}", uuid);
+
+                    let mut b = results.get();
+
+                    let gb = api::machines::give_back::ToClient::new(
+                            GiveBack::new(self.log.new(o!()), uuid, self.mdb.clone())
+                        ).into_client::<Server>();
+
+                    b.set_giveback(gb);
+
+                    Promise::ok(())
+                },
+                Status::Occupied => {
+                    info!(self.log, "Attempted use on an occupied machine {}", uuid);
+                    Promise::err(Error::failed("Machine is occupied".to_string()))
+                },
+                Status::Blocked => {
+                    info!(self.log, "Attempted use on a blocked machine {}", uuid);
+                    Promise::err(Error::failed("Machine is blocked".to_string()))
+                }
+            }
         } else {
             info!(self.log, "Attempted use on invalid machine {}", uuid);
             Promise::err(Error::failed("No such machine".to_string()))
         }
+    }
+}
+
+pub struct GiveBack {
+    log: Logger,
+    mdb: Mutable<MachineDB>,
+    uuid: Uuid,
+}
+impl GiveBack {
+    pub fn new(log: Logger, uuid: Uuid, mdb: Mutable<MachineDB>) -> Self {
+        trace!(log, "Giveback initialized for {}", uuid);
+        Self { log, mdb, uuid }
+    }
+}
+
+impl api::machines::give_back::Server for GiveBack {
+    fn giveback(&mut self,
+        _params: api::machines::give_back::GivebackParams,
+        _results: api::machines::give_back::GivebackResults)
+        -> Promise<(), Error>
+    {
+        trace!(log, "Returning {}...", uuid);
+        let mut mdb = self.mdb.lock_mut();
+        if let Some(m) = mdb.get_mut(&self.uuid) {
+            m.status = Status::Free;
+        } else {
+            warn!(self.log, "A giveback was issued for a unknown machine {}", self.uuid);
+        }
+
+        Promise::ok(())
     }
 }
 

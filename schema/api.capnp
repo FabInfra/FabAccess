@@ -49,10 +49,11 @@ struct UUID {
     # paramount that you are consistent when encoding and decoding this type.
     #
     # Consider using this algorithm for assembling the 128-bit integer:
-    #   uint128_t uuid = (uuid1 << 64) + uuid0;
+    # (assuming ISO9899:2018 shifting & casting rules)
+    #   uint128_t num = (uuid1 << 64) + uuid0;
     # And then respectively this code for deconstructing it:
-    #   uint64_t uuid0 = (uint64_t num);
-    #   uint64_t uuid1 = (uint64_t (num >> 64));
+    #   uint64_t uuid0 = (uint64_t) num;
+    #   uint64_t uuid1 = (uint64_t) (num >> 64);
 
     uuid0 @0 :UInt64;
     uuid1 @1 :UInt64;
@@ -63,19 +64,19 @@ interface Machines {
         setBlocked @0 ( blocked :Bool ) -> ();
         # Block or Unblock the machine. A blocked machine can not be used.
 
-        return @1 () -> ();
+        forceReturn @1 () -> ();
         # Forcefully marking a machine as `returned` — i.e. not used.
     }
 
-    interface Return {
+    interface GiveBack {
         # The only way of getting a `return` interface is by successfully calling `use`. This means
         # only the user that marked a machine as `used` can return it again. (Baring force override)
-        return @0 () -> ();
+        giveback @0 () -> ();
     }
 
     manage @0 ( uuid :UUID ) -> ( manage :Manage );
 
-    use @1 ( uuid :UUID ) -> ( return :Return );
+    use @1 ( uuid :UUID ) -> ( giveback :GiveBack );
     # Use a machine, identified by its UUID. If the caller is allowed to and the machine is
     # available to being used a `return` Capability will be returned — the person using a machine is
     # after all the only person that can return the machine after use.

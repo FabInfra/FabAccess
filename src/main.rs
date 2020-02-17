@@ -58,16 +58,22 @@ fn main() {
     let permlog = log.new(o!());
     let machlog = log.new(o!());
 
+    machine::save(&c2, &m2.lock_ref()).expect("MachineDB save");
+
     let spawner = exec.spawner();
     let result: Result<(), Box<dyn std::error::Error>> = exec.run_until(async move {
         let listener = async_std::net::TcpListener::bind(&addr).await?;
         let mut incoming = listener.incoming();
         while let Some(socket) = incoming.next().await {
             let socket = socket?;
+            trace!(log, "New connection from {:?}", socket.peer_addr());
             // TODO: Prettify session handling
             let auth = auth::Authentication::new(authp.clone());
+            trace!(log, "Init auth");
             let perm = access::Permissions::new(permlog.clone(), enf.clone(), auth.clone());
+            trace!(log, "Init perm");
             let mach = machine::Machines::new(machlog.clone(), m.clone(), perm.clone());
+            trace!(log, "Init mach");
 
             let rpc_system = api::process_socket(auth, perm, mach, socket);
             spawner.spawn_local_obj(
@@ -77,5 +83,4 @@ fn main() {
     });
     result.expect("main");
 
-    machine::save(&c2, &m2.lock_ref()).expect("MachineDB save");
 }
