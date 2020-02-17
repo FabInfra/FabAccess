@@ -11,6 +11,7 @@ use casbin::Enforcer;
 
 use crate::error::Result;
 use crate::config::Config;
+use crate::api::api;
 
 /// Status of a Machine
 #[derive(PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -21,6 +22,13 @@ pub enum Status {
     Occupied,
     /// Not used by anybody but also can not be used. E.g. down for maintenance
     Blocked,
+}
+
+#[derive(Clone)]
+pub struct Machines;
+
+impl api::machines::Server for Machines {
+
 }
 
 #[derive(PartialEq, Eq, Debug, Serialize, Deserialize)]

@@ -15,7 +15,7 @@ mod machine;
 
 use std::ops::Deref;
 
-use api::api_capnp;
+use api::api as api_capnp;
 
 use futures::prelude::*;
 use futures_signals::signal::Mutable;
@@ -45,9 +45,10 @@ fn main() {
 
     let p = auth::open_passdb(&config.passdb).unwrap();
     let p = Mutable::new(p);
-    let a = auth::Authentication::new(p, enf.clone());
+    let auth = auth::Authentication::new(p, enf.clone());
 
-
+    let perm = access::Permissions;
+    let mach = machine::Machines;
 
     use std::net::ToSocketAddrs;
     let args: Vec<String> = ::std::env::args().collect();
@@ -65,7 +66,7 @@ fn main() {
         let mut incoming = listener.incoming();
         while let Some(socket) = incoming.next().await {
             let socket = socket?;
-            let rpc_system = api::process_socket(enf.clone(), m.clone(), a.clone(), socket);
+            let rpc_system = api::process_socket(auth.clone(), perm.clone(), mach.clone(), socket);
             machine::save(&config, &m.lock_ref()).expect("MachineDB save");
             spawner.spawn_local_obj(
                 Box::pin(rpc_system.map_err(|e| println!("error: {:?}", e)).map(|_|())).into()).expect("spawn")

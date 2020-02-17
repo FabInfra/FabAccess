@@ -121,12 +121,12 @@ impl Authentication {
     }
 }
 
-use crate::api_capnp;
+use crate::api::api;
 
-impl api_capnp::authentication::Server for Authentication {
+impl api::authentication::Server for Authentication {
     fn available_mechanisms(&mut self,
-        _params: api_capnp::authentication::AvailableMechanismsParams,
-        mut results: api_capnp::authentication::AvailableMechanismsResults)
+        _params: api::authentication::AvailableMechanismsParams,
+        mut results: api::authentication::AvailableMechanismsResults)
         -> ::capnp::capability::Promise<(), ::capnp::Error>
     {
         let m = self.mechs();
@@ -141,15 +141,15 @@ impl api_capnp::authentication::Server for Authentication {
     }
 
     fn initialize_authentication(&mut self,
-        params: api_capnp::authentication::InitializeAuthenticationParams,
-        mut results: api_capnp::authentication::InitializeAuthenticationResults)
+        params: api::authentication::InitializeAuthenticationParams,
+        mut results: api::authentication::InitializeAuthenticationResults)
         -> ::capnp::capability::Promise<(), ::capnp::Error>
     {
         let params = pry!(params.get());
         let mechanism = pry!(params.get_mechanism());
         match mechanism {
             "PLAIN" => {
-                use api_capnp::maybe::Which;
+                use api::maybe::Which;
 
                 let data = pry!(params.get_initial_data());
                 if let Ok(Which::Some(data)) = data.which() {
@@ -165,7 +165,7 @@ impl api_capnp::authentication::Server for Authentication {
                         results
                             .get()
                             .init_response()
-                            .set_right(api_capnp::authentication::outcome::ToClient::new(outcome)
+                            .set_right(api::authentication::outcome::ToClient::new(outcome)
                                 .into_client::<::capnp_rpc::Server>()).unwrap();
                     }
                     ::capnp::capability::Promise::ok(())
@@ -184,8 +184,8 @@ impl api_capnp::authentication::Server for Authentication {
     }
 
     fn get_authzid(&mut self,
-        _params: api_capnp::authentication::GetAuthzidParams,
-        mut results: api_capnp::authentication::GetAuthzidResults)
+        _params: api::authentication::GetAuthzidParams,
+        mut results: api::authentication::GetAuthzidResults)
         -> ::capnp::capability::Promise<(), ::capnp::Error>
     {
         if let Some(zid) = &self.state {
@@ -207,10 +207,10 @@ impl Outcome {
     }
 }
 
-impl api_capnp::authentication::outcome::Server for Outcome {
+impl api::authentication::outcome::Server for Outcome {
     fn value(&mut self,
-        _params: api_capnp::authentication::outcome::ValueParams,
-        mut results: api_capnp::authentication::outcome::ValueResults)
+        _params: api::authentication::outcome::ValueParams,
+        mut results: api::authentication::outcome::ValueResults)
         -> ::capnp::capability::Promise<(), ::capnp::Error>
     {
         results.get().set_granted(self.value);

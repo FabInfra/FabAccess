@@ -39,6 +39,8 @@ interface Diflouroborane {
     machines @2 () -> ( mach :Machines );
     # Diflouroborane stores machine¹ information in an opaque internal database. This interface is
     # the only stable process of modifying that information
+
+    # TODO Capability transfer system, required for machine takeover, session resumption.
 }
 
 struct Maybe(Value) {
@@ -59,18 +61,6 @@ struct Either(Left, Right) {
         left @0 :Left;
         right @1 :Right;
     }
-}
-
-struct Machine {
-    name @0 :Text;
-    location @1 :Text;
-    status @2 :Status;
-}
-
-enum Status {
-    free @0;
-    occupied @1;
-    blocked @2;
 }
 
 struct UUID {
