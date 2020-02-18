@@ -12,9 +12,22 @@ use std::io::{Read, Write};
 use std::ops::Deref;
 
 use futures_signals::signal::Mutable;
-use casbin::Enforcer;
+use casbin::{Enforcer, Model, FileAdapter};
+
+use slog::Logger;
 
 use crate::error::Result;
+use crate::config::Config;
+
+pub async fn init(log: Logger, config: Config) -> Result<AuthenticationProvider> {
+    let passdb = open_passdb(&config.passdb).unwrap();
+
+    let m = Model::from_file(&config.access.model).await?;
+    let a = FileAdapter::new(config.access.policy);
+    let enforcer = Enforcer::new(m, Box::new(a)).await?;
+
+    Ok(AuthenticationProvider::new(passdb, enforcer))
+}
 
 #[derive(Debug)]
 pub enum SASLError {
@@ -50,11 +63,10 @@ pub fn open_passdb(path: &Path) -> Option<PassDB> {
     }
 }
 
-#[derive(Clone)]
 pub struct Plain {
     // FIXME: I don't want to store passwords.
-    passdb: Mutable<PassDB>,
-    enforcer: Mutable<Enforcer>,
+    passdb: PassDB,
+    enforcer: Enforcer,
 }
 
 impl Plain {
@@ -63,7 +75,7 @@ impl Plain {
         if let Some((authzid, authcid, passwd)) = split_nul(data) {
 
             // Check if we know about that user
-            if let Some(pwd) = self.passdb.lock_ref().get(authcid) {
+            if let Some(pwd) = self.passdb.get(authcid) {
                 // Check the provided password
                 // FIXME: At least use hashes
                 if pwd == passwd {
@@ -73,8 +85,7 @@ impl Plain {
                         return Ok((true, authcid));
                     }
 
-                    let e = self.enforcer.lock_ref();
-                    if let Ok(b) = e.enforce(vec![authcid, authzid, "su"]) {
+                    if let Ok(b) = self.enforcer.enforce(vec![authcid, authzid, "su"]) {
                         if b {
                             return Ok((true, authzid));
                         } else {
@@ -109,7 +120,7 @@ pub struct AuthenticationProvider {
 }
 
 impl AuthenticationProvider {
-    pub fn new(passdb: Mutable<PassDB>, enforcer: Mutable<Enforcer>) -> Self {
+        pub fn new(passdb: PassDB, enforcer: Enforcer) -> Self {
         Self {
             plain: Plain { passdb, enforcer }
         }

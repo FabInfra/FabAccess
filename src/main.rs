@@ -106,7 +106,7 @@ fn main() -> Result<(), Error> {
     // filtered
     let machinedb_f = machine::init(log.new(o!("system" => "machinedb")), &config);
     let permission_f = access::init(log.new(o!("system" => "permissions")), &config);
-    let authentication_f = auth::init(log.new(o!("system" => "authentication")), &config);
+    let authentication_f = auth::init(log.new(o!("system" => "authentication")), config.clone());
 
     // Bind to each address in config.listen.
     // This is a Stream over Futures so it will do absolutely nothing unless polled to completion
