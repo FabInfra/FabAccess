@@ -26,7 +26,7 @@ use futures::prelude::*;
 use futures::executor::{LocalPool, ThreadPool};
 use futures::compat::Stream01CompatExt;
 use futures::join;
-use futures::task::SpawnExt;
+use futures::task::{SpawnExt, LocalSpawn};
 
 use capnp_rpc::twoparty::{VatNetwork, VatId};
 use capnp_rpc::rpc_twoparty_capnp::Side;
@@ -42,6 +42,8 @@ use std::mem::drop;
 use std::sync::Arc;
 
 use error::Error;
+
+use api::API;
 
 // Returning a `Result` from `main` allows us to use the `?` shorthand.
 // In the case of an Err it will be printed using `fmt::Debug`
@@ -106,7 +108,7 @@ fn main() -> Result<(), Error> {
     // Start loading the machine database, authentication system and permission system
     // All of those get a custom logger so the source of a log message can be better traced and
     // filtered
-    let machinedb_f = machine::init(log.new(o!("system" => "machinedb")), &config);
+    let machinedb_f = machine::init(log.new(o!("system" => "machines")), &config);
     let permission_f = access::init(log.new(o!("system" => "permissions")), &config);
     let authentication_f = auth::init(log.new(o!("system" => "authentication")), config.clone());
 
@@ -132,14 +134,14 @@ fn main() -> Result<(), Error> {
             }
         }).collect();
 
-    let (mdb, pdb, auth) = exec.run_until(async {
+    let (mach, pdb, auth) = exec.run_until(async {
         // Rull all futures to completion in parallel.
         // This will block until all three are done starting up.
         join!(machinedb_f, permission_f, authentication_f)
     });
 
     // Error out if any of the subsystems failed to start.
-    let mdb = mdb?;
+    let mach = mach?;
     let pdb = pdb.unwrap();
     let auth = auth?;
 
@@ -157,6 +159,12 @@ fn main() -> Result<(), Error> {
             info!(stop_log.new(o!("system" => "threadpool")), "Stopping Thread <{}>", i)
         })
         .create()?;
+    let local_spawn = exec.spawner();
+
+
+    // The API has access to all subsystems it needs and the Threadpool as capability to spawn new
+    // tasks for CPU-intensive work
+    let api = API::new(auth, pdb, mach, pool);
 
     // Closure inefficiencies. Lucky cloning an Arc is pretty cheap.
     let inner_log = log.clone();
@@ -166,9 +174,6 @@ fn main() -> Result<(), Error> {
         // Generate a stream of TcpStreams appearing on any of the interfaces we listen to
         let listeners = listeners_s.await;
         let incoming = stream::select_all(listeners.iter().map(|l| l.incoming()));
-
-        // Spawner is a handle to the shared ThreadPool forwarded into each connection
-        let spawner = pool.clone();
 
         // For each incoming connection start a new task to handle it and throw it on the thread
         // pool
@@ -191,7 +196,7 @@ fn main() -> Result<(), Error> {
 
                     // We handle the error using map_err, `let _` is used to quiet the compiler
                     // warning
-                    let f = api::handle_connection(log.clone(), socket, spawner.clone())
+                    let f = api::handle_connection(api.clone(), log.clone(), socket)
                         .map_err(move |e| {
                             error!(log, "Error occured during protocol handling: {}", e);
                         })
@@ -199,7 +204,8 @@ fn main() -> Result<(), Error> {
                         .map(|_| ());
 
                     // In this case only the error is relevant since the Value is always ()
-                    if let Err(e) = pool.spawn(f) {
+                    // The future is Boxed to make it the `LocalFutureObj` that LocalSpawn expects
+                    if let Err(e) = local_spawn.spawn_local_obj(Box::new(f).into()) {
                         error!(elog, "Failed to spawn connection handler: {}", e);
                         // Failing to spawn a handler means we are most likely overloaded
                         return LoopResult::Overloaded;

@@ -9,6 +9,7 @@ pub enum Error {
     TomlSer(toml::ser::Error),
     SASL(SASLError),
     IO(io::Error),
+    Boxed(Box<dyn std::error::Error>),
 }
 
 impl From<SASLError> for Error {
@@ -32,6 +33,12 @@ impl From<toml::de::Error> for Error {
 impl From<toml::ser::Error> for Error {
     fn from(e: toml::ser::Error) -> Error {
         Error::TomlSer(e)
+    }
+}
+
+impl From<Box<dyn std::error::Error>> for Error {
+    fn from(e: Box<dyn std::error::Error>) -> Error {
+        Error::Boxed(e)
     }
 }
 

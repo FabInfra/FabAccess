@@ -15,6 +15,9 @@ use crate::config::Config;
 use crate::api::api;
 use crate::access::Permissions;
 
+use std::rc::Rc;
+use async_std::sync::{Arc, RwLock};
+
 use capnp::capability::Promise;
 use capnp::Error;
 use capnp_rpc::Server;
@@ -32,16 +35,64 @@ pub enum Status {
     Blocked,
 }
 
-#[derive(Clone)]
-pub struct Machines {
+pub struct MachinesProvider {
     log: Logger,
-    mdb: Mutable<MachineDB>,
-    perm: Permissions
+    mdb: MachineDB,
 }
 
+impl MachinesProvider {
+    pub fn new(log: Logger, mdb: MachineDB) -> Self {
+        Self { log, mdb }
+    }
+
+    pub fn use_(&mut self, uuid: &Uuid) -> std::result::Result<(), capnp::Error> {
+        if let Some(m) = self.mdb.get_mut(uuid) {
+            match m.status {
+                Status::Free => {
+                    trace!(self.log, "Granted use on machine {}", uuid);
+
+                    m.status = Status::Occupied;
+
+                    Ok(())
+                },
+                Status::Occupied => {
+                    info!(self.log, "Attempted use on an occupied machine {}", uuid);
+                    Err(Error::failed("Machine is occupied".to_string()))
+                },
+                Status::Blocked => {
+                    info!(self.log, "Attempted use on a blocked machine {}", uuid);
+                    Err(Error::failed("Machine is blocked".to_string()))
+                }
+            }
+        } else {
+            info!(self.log, "Attempted use on invalid machine {}", uuid);
+            Err(Error::failed("No such machine".to_string()))
+        }
+    }
+
+    pub fn give_back(&mut self, uuid: &Uuid) -> std::result::Result<(), capnp::Error> {
+        if let Some(m) = self.mdb.get_mut(uuid) {
+            m.status = Status::Free;
+        } else {
+            warn!(self.log, "A giveback was issued for a unknown machine {}", uuid);
+        }
+
+        Ok(())
+    }
+
+    pub fn get_perm_req(&self, uuid: &Uuid) -> Option<String> {
+        self.mdb.get(uuid).map(|m| m.perm.clone())
+    }
+}
+
+#[derive(Clone)]
+pub struct Machines {
+    inner: Arc<RwLock<MachinesProvider>>,
+    perm: Rc<Permissions>,
+}
 impl Machines {
-    pub fn new(log: Logger, mdb: Mutable<MachineDB>, perm: Permissions) -> Self {
-        Self { log, mdb, perm }
+    pub fn new(inner: Arc<RwLock<MachinesProvider>>, perm: Rc<Permissions>) -> Self {
+        Self { inner, perm }
     }
 }
 impl api::machines::Server for Machines {
@@ -52,79 +103,95 @@ impl api::machines::Server for Machines {
     {
         let params = pry!(params.get());
         let uuid_s = pry!(params.get_uuid());
-
         let uuid = uuid_from_api(uuid_s);
 
-        let db = self.mdb.lock_ref();
+        // We need to copy the Arc here because we don't have access to it from within the closure
+        // witout moving it out of self.
+        let i = self.inner.clone();
+        let p = self.perm.clone();
 
-        if let Some(m) = db.get(&uuid) {
-            let manager = MachineManager::new(uuid, self.mdb.clone());
+        let f = async move {
+            // We only need a read lock at first there's no reason to aquire a write lock.
+            let i_lock = i.read().await;
 
-            if self.perm.enforce(&m.perm, "manage") {
-                let mut b = results.get();
-                let mngr = api::machines::manage::ToClient::new(manager).into_client::<Server>();
-                b.set_manage(mngr);
-                trace!(self.log, "Granted manage on machine {}", uuid);
-                Promise::ok(())
-            } else {
-                Promise::err(Error::failed("Permission denied".to_string()))
+            if let Some(ps) = i_lock.get_perm_req(&uuid) {
+                // drop the lock as soon as possible to prevent locking as much as possible
+                drop(i_lock);
+                if let Ok(true) = p.enforce(&ps, "manage").await {
+                    // We're here and have not returned an error yet - that means we're free to
+                    // send a successful manage back.
+                    let mut b = results.get();
+
+                    // Magic incantation to get a capability to send
+                    // Also since we move i in here we at this point *must* have dropped
+                    // all locks we may still have on it.
+                    b.set_manage(api::machines::give_back::ToClient::new(
+                            MachineManager::new(i, uuid)).into_client::<Server>());
+                }
             }
-        } else {
-            info!(self.log, "Attempted manage on invalid machine {}", uuid);
-            Promise::err(Error::failed("No such machine".to_string()))
-        }
+            Ok(())
+        };
+
+        Promise::from_future(f)
     }
 
     fn use_(&mut self,
         params: api::machines::UseParams,
         mut results: api::machines::UseResults)
-        -> Promise<(), Error>
+        -> Promise<(), capnp::Error>
     {
         let params = pry!(params.get());
         let uuid_s = pry!(params.get_uuid());
         let uuid = uuid_from_api(uuid_s);
 
-        let mdb = self.mdb.lock_ref();
-        if let Some(m) = mdb.get(&uuid) {
-            match m.status {
-                Status::Free => {
-                    trace!(self.log, "Granted use on machine {}", uuid);
+        // We need to copy the Arc here because we don't have access to it from within the closure
+        // witout moving it out of self.
+        let i = self.inner.clone();
+        let p = self.perm.clone();
 
+        let f = async move {
+            // We only need a read lock at first there's no reason to aquire a write lock.
+            let i_lock = i.read().await;
+
+            if let Some(ps) = i_lock.get_perm_req(&uuid) {
+                // drop the lock as soon as possible to prevent locking as much as possible
+                drop(i_lock);
+                if let Ok(true) = p.enforce(&ps, "write").await {
+                    {
+                        // If use_() returns an error that is our error. If it doesn't that means we can use
+                        // the machine
+                        // Using a subscope to again make the time the lock is valid as short as
+                        // possible. Less locking == more good
+                        let mut i_lock = i.write().await;
+                        i_lock.use_(&uuid)?;
+                    }
+
+                    // We're here and have not returned an error yet - that means we're free to
+                    // send a successful use back.
                     let mut b = results.get();
 
-                    let gb = api::machines::give_back::ToClient::new(
-                            GiveBack::new(self.log.new(o!()), uuid, self.mdb.clone())
-                        ).into_client::<Server>();
-
-                    b.set_giveback(gb);
-
-                    Promise::ok(())
-                },
-                Status::Occupied => {
-                    info!(self.log, "Attempted use on an occupied machine {}", uuid);
-                    Promise::err(Error::failed("Machine is occupied".to_string()))
-                },
-                Status::Blocked => {
-                    info!(self.log, "Attempted use on a blocked machine {}", uuid);
-                    Promise::err(Error::failed("Machine is blocked".to_string()))
+                    // Magic incantation to get a capability to send
+                    // Also since we move i in here we at this point *must* have dropped
+                    // all locks we may still have on it.
+                    b.set_giveback(api::machines::give_back::ToClient::new(
+                            GiveBack::new(i, uuid)).into_client::<Server>());
                 }
             }
-        } else {
-            info!(self.log, "Attempted use on invalid machine {}", uuid);
-            Promise::err(Error::failed("No such machine".to_string()))
-        }
+            Ok(())
+        };
+
+        Promise::from_future(f)
     }
 }
 
+#[derive(Clone)]
 pub struct GiveBack {
-    log: Logger,
-    mdb: Mutable<MachineDB>,
+    mdb: Arc<RwLock<MachinesProvider>>,
     uuid: Uuid,
 }
 impl GiveBack {
-    pub fn new(log: Logger, uuid: Uuid, mdb: Mutable<MachineDB>) -> Self {
-        trace!(log, "Giveback initialized for {}", uuid);
-        Self { log, mdb, uuid }
+    pub fn new(mdb: Arc<RwLock<MachinesProvider>>, uuid: Uuid) -> Self {
+        Self { mdb, uuid }
     }
 }
 
@@ -134,19 +201,16 @@ impl api::machines::give_back::Server for GiveBack {
         _results: api::machines::give_back::GivebackResults)
         -> Promise<(), Error>
     {
-        trace!(log, "Returning {}...", uuid);
-        let mut mdb = self.mdb.lock_mut();
-        if let Some(m) = mdb.get_mut(&self.uuid) {
-            m.status = Status::Free;
-        } else {
-            warn!(self.log, "A giveback was issued for a unknown machine {}", self.uuid);
-        }
+        let mdb = self.mdb.clone();
+        let uuid = self.uuid.clone();
+        let f = async move {
+            mdb.write().await.give_back(&uuid)
+        };
 
-        Promise::ok(())
+        Promise::from_future(f)
     }
 }
 
-// FIXME: Test this exhaustively!
 fn uuid_from_api(uuid: api::u_u_i_d::Reader) -> Uuid {
     let uuid0 = uuid.get_uuid0() as u128;
     let uuid1 = uuid.get_uuid1() as u128;
@@ -163,12 +227,12 @@ fn api_from_uuid(uuid: Uuid, mut wr: api::u_u_i_d::Builder) {
 
 #[derive(Clone)]
 pub struct MachineManager {
-    mdb: Mutable<MachineDB>,
+    mdb: Arc<RwLock<MachinesProvider>>,
     uuid: Uuid,
 }
 
 impl MachineManager {
-    pub fn new(uuid: Uuid, mdb: Mutable<MachineDB>) -> Self {
+    pub fn new(uuid: Uuid, mdb: Arc<RwLock<MachineDB>>) -> Self {
         Self { mdb, uuid }
     }
 }
@@ -222,16 +286,18 @@ impl Machine {
 
 pub type MachineDB = HashMap<Uuid, Machine>;
 
-pub fn init(config: &Config) -> Result<MachineDB> {
-    if config.machinedb.is_file() {
+pub async fn init(log: Logger, config: &Config) -> Result<MachinesProvider> {
+    let mdb = if config.machinedb.is_file() {
         let mut fp = File::open(&config.machinedb)?;
         let mut content = String::new();
         fp.read_to_string(&mut content)?;
         let map = toml::from_str(&content)?;
-        return Ok(map);
+        map
     } else {
-        return Ok(HashMap::new());
-    }
+        HashMap::new()
+    };
+
+    Ok(MachinesProvider::new(log, mdb))
 }
 
 pub fn save(config: &Config, mdb: &MachineDB) -> Result<()> {

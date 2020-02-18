@@ -5,37 +5,50 @@ use slog::Logger;
 
 use casbin::prelude::*;
 
-use super::config::Config;
-
 use futures_signals::signal::Mutable;
 
 use crate::api::api;
+use crate::config::Config;
 use crate::auth::Authentication;
 use crate::error::Result;
 
+use std::rc::Rc;
+use async_std::sync::{Arc, RwLock};
+
+use std::ops::Deref;
+
+pub struct PermissionsProvider {
+    log: Logger,
+    pdb: Enforcer,
+}
+
+impl PermissionsProvider {
+    pub fn new(log: Logger, pdb: Enforcer) -> Self {
+        Self { log, pdb }
+    }
+
+    pub fn enforce(&self, actor: &str, object: &str, action: &str) -> Result<bool> {
+        let b = self.pdb.enforce(vec![actor, object, action])?;
+        Ok(b)
+    }
+}
+
 #[derive(Clone)]
 pub struct Permissions {
-    log: Logger,
-    pdb: Mutable<Enforcer>,
-    auth: Authentication,
+    inner: Arc<RwLock<PermissionsProvider>>,
+    auth: Rc<Authentication>,
 }
 
 impl Permissions {
-    pub fn new(log: Logger, pdb: Mutable<Enforcer>, auth: Authentication) -> Self {
-        Self { log, pdb, auth }
+    pub fn new(inner: Arc<RwLock<PermissionsProvider>>, auth: Rc<Authentication>) -> Self {
+        Self { inner, auth }
     }
 
-    pub fn enforce(&self, object: &str, action: &str) -> bool {
-        if let Some(actor) = self.auth.get_authzid() {
-            trace!(self.log, "Checking permission {} for {} on {}", action, actor, object);
-            let r = self.pdb.lock_ref().enforce(vec![&actor,object,action]).unwrap();
-            if !r {
-                info!(self.log, "Failed permission {} for {} on {}", action, actor, object);
-            }
-            return r;
+    pub async fn enforce(&self, object: &str, action: &str) -> Result<bool> {
+        if let Some(actor) = self.auth.state.read().await.deref() {
+            self.inner.read().await.enforce(&actor, object, action)
         } else {
-            info!(self.log, "Attempted anonymous access: {} on {}", action, object);
-            false
+            Ok(false)
         }
     }
 }
@@ -45,11 +58,11 @@ impl api::permissions::Server for Permissions {
 }
 
 /// This line documents init
-pub async fn init(config: &Config) -> std::result::Result<Enforcer, Box<dyn std::error::Error>> {
+pub async fn init(log: Logger, config: &Config) -> std::result::Result<PermissionsProvider, Box<dyn std::error::Error>> {
     let model = Model::from_file(config.access.model.clone()).await?;
     let adapter = Box::new(FileAdapter::new(config.access.policy.clone()));
 
     let e = Enforcer::new(model, adapter).await?;
 
-    return Ok(e);
+    return Ok(PermissionsProvider::new(log, e));
 }

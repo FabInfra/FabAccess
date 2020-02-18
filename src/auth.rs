@@ -11,6 +11,9 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::ops::Deref;
 
+use async_std::sync::{Arc, RwLock};
+use capnp::capability::Promise;
+
 use futures_signals::signal::Mutable;
 use casbin::{Enforcer, Model, FileAdapter};
 
@@ -133,23 +136,15 @@ impl AuthenticationProvider {
 
 #[derive(Clone)]
 pub struct Authentication {
-    state: Mutable<Option<String>>,
-    provider: Mutable<AuthenticationProvider>,
+    pub state: Arc<RwLock<Option<String>>>,
+    provider: Arc<RwLock<AuthenticationProvider>>,
 }
 impl Authentication {
-    pub fn new(provider: Mutable<AuthenticationProvider>) -> Self {
+    pub fn new(provider: Arc<RwLock<AuthenticationProvider>>) -> Self {
         Self {
-            state: Mutable::new(None),
+            state: Arc::new(RwLock::new(None)),
             provider: provider,
         }
-    }
-
-    pub fn get_authzid(&self) -> Option<String> {
-        self.state.lock_ref().clone()
-    }
-
-    pub fn mechs(&self) -> Vec<&'static str> {
-        self.provider.lock_ref().mechs()
     }
 }
 
@@ -162,15 +157,19 @@ impl api::authentication::Server for Authentication {
         mut results: api::authentication::AvailableMechanismsResults)
         -> ::capnp::capability::Promise<(), ::capnp::Error>
     {
-        let m = self.mechs();
-        let mut b = results.get()
-            .init_mechanisms(m.len() as u32);
-        for (i, mech) in m.iter().enumerate() {
-            let mut bldr = b.reborrow();
-            bldr.set(i as u32, mech);
-        }
+        let p = self.provider.clone();
+        let f = async move {
+            let m = p.read().await.mechs();
+            let mut b = results.get()
+                .init_mechanisms(m.len() as u32);
+            for (i, mech) in m.iter().enumerate() {
+                let mut bldr = b.reborrow();
+                bldr.set(i as u32, mech);
+            }
+            Ok(())
+        };
 
-        ::capnp::capability::Promise::ok(())
+        ::capnp::capability::Promise::from_future(f)
     }
 
     fn initialize_authentication(&mut self,
@@ -178,42 +177,47 @@ impl api::authentication::Server for Authentication {
         mut results: api::authentication::InitializeAuthenticationResults)
         -> ::capnp::capability::Promise<(), ::capnp::Error>
     {
-        let params = pry!(params.get());
-        let mechanism = pry!(params.get_mechanism());
-        match mechanism {
-            "PLAIN" => {
-                use api::authentication::maybe_data::Which;
+        let prov = self.provider.clone();
+        let stat = self.state.clone();
 
-                let data = pry!(params.get_initial_data());
-                if let Ok(Which::Some(data)) = data.which() {
-                    let data = pry!(data);
-                    if let Ok((b, name)) = self.provider.lock_ref().plain.step(data) {
+        Promise::from_future(async move {
+            let params = params.get()?;
+            let mechanism = params.get_mechanism()?;
 
-                        // If login was successful, also set the current authzid
-                        if b {
-                            self.state.lock_mut().replace(name.to_string());
+            match mechanism {
+                "PLAIN" => {
+                    use api::authentication::maybe_data::Which;
+
+                    let data = params.get_initial_data()?;
+                    if let Ok(Which::Some(data)) = data.which() {
+                        let data = data?;
+                        if let Ok((b, name)) = prov.read().await.plain.step(data) {
+                            // If login was successful set the authzid
+                            if b {
+                                stat.write().await.replace(name.to_string());
+                            }
+
+                            let outcome = Outcome::value(b);
+                            results
+                                .get()
+                                .init_response()
+                                .set_outcome(api::authentication::outcome::ToClient::new(outcome)
+                                    .into_client::<::capnp_rpc::Server>());
                         }
-
-                        let outcome = Outcome::value(b);
-                        results
-                            .get()
-                            .init_response()
-                            .set_outcome(api::authentication::outcome::ToClient::new(outcome)
-                                .into_client::<::capnp_rpc::Server>());
+                        Ok(())
+                    } else {
+                        Err(::capnp::Error::unimplemented(
+                            "SASL PLAIN requires initial data set".to_string()))
                     }
-                    ::capnp::capability::Promise::ok(())
-                } else {
-                    return
-                        ::capnp::capability::Promise::err(::capnp::Error::unimplemented(
-                        "SASL PLAIN requires initial data set".to_string()));
+                },
+                m => {
+                    Err(::capnp::Error::unimplemented(
+                            format!("SASL Mechanism {} is not implemented", m)
+                    ))
                 }
-            },
-            m => {
-                return
-                    ::capnp::capability::Promise::err(::capnp::Error::unimplemented(
-                    format!("SASL Mechanism {} is not implemented", m)));
+
             }
-        }
+        })
     }
 
     fn get_authzid(&mut self,
@@ -221,12 +225,18 @@ impl api::authentication::Server for Authentication {
         mut results: api::authentication::GetAuthzidResults)
         -> ::capnp::capability::Promise<(), ::capnp::Error>
     {
-        if let Some(zid) = self.state.lock_ref().deref() {
-            results.get().set_authzid(zid);
-        } else {
-            results.get().set_authzid("");
-        }
-        ::capnp::capability::Promise::ok(())
+        let state = self.state.clone();
+        let f = async move {
+            if let Some(zid) = state.read().await.deref() {
+                results.get().set_authzid(&zid);
+            } else {
+                results.get().set_authzid("");
+            }
+
+            Ok(())
+        };
+
+        Promise::from_future(f)
     }
 }
 
