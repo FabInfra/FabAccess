@@ -23,6 +23,7 @@ use capnp::Error;
 use capnp_rpc::Server;
 
 use uuid::Uuid;
+use std::ops::DerefMut;
 
 /// Status of a Machine
 #[derive(PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -83,6 +84,13 @@ impl MachinesProvider {
     pub fn get_perm_req(&self, uuid: &Uuid) -> Option<String> {
         self.mdb.get(uuid).map(|m| m.perm.clone())
     }
+
+    pub fn set_blocked(&mut self, uuid: &Uuid, blocked: bool) -> std::result::Result<(), capnp::Error> {
+        // If the value can not be found map doesn't run and ok_or changes it into a Err with the
+        // given error value
+        self.mdb.get_mut(uuid).map(|m| m.set_blocked(blocked))
+            .ok_or(capnp::Error::failed("No such machine".to_string()))
+    }
 }
 
 #[derive(Clone)]
@@ -125,8 +133,8 @@ impl api::machines::Server for Machines {
                     // Magic incantation to get a capability to send
                     // Also since we move i in here we at this point *must* have dropped
                     // all locks we may still have on it.
-                    b.set_manage(api::machines::give_back::ToClient::new(
-                            MachineManager::new(i, uuid)).into_client::<Server>());
+                    b.set_manage(api::machines::manage::ToClient::new(
+                            MachineManager::new(uuid, i)).into_client::<Server>());
                 }
             }
             Ok(())
@@ -232,7 +240,7 @@ pub struct MachineManager {
 }
 
 impl MachineManager {
-    pub fn new(uuid: Uuid, mdb: Arc<RwLock<MachineDB>>) -> Self {
+    pub fn new(uuid: Uuid, mdb: Arc<RwLock<MachinesProvider>>) -> Self {
         Self { mdb, uuid }
     }
 }
@@ -240,19 +248,19 @@ impl MachineManager {
 impl api::machines::manage::Server for MachineManager {
     fn set_blocked(&mut self,
         params: api::machines::manage::SetBlockedParams,
-        mut results: api::machines::manage::SetBlockedResults)
+        results: api::machines::manage::SetBlockedResults)
         -> Promise<(), Error>
     {
-        let mut db = self.mdb.lock_mut();
-        if let Some(m) = db.get_mut(&self.uuid) {
-            let params = pry!(params.get());
+        let uuid = self.uuid.clone();
+        let mdb = self.mdb.clone();
+        let f = async move {
+            let params = params.get()?;
             let blocked = params.get_blocked();
+            mdb.write().await.set_blocked(&uuid, blocked)?;
+            Ok(())
+        };
 
-            m.set_blocked(blocked);
-            Promise::ok(())
-        } else {
-            Promise::err(Error::failed("No such machine".to_string()))
-        }
+        Promise::from_future(f)
     }
 
 }

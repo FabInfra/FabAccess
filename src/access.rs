@@ -29,6 +29,11 @@ impl PermissionsProvider {
 
     pub fn enforce(&self, actor: &str, object: &str, action: &str) -> Result<bool> {
         let b = self.pdb.enforce(vec![actor, object, action])?;
+        if b {
+            trace!(self.log, "Granted {} on {} for {}", action, object, actor);
+        } else {
+            trace!(self.log, "Denied {} on {} for {}", action, object, actor);
+        }
         Ok(b)
     }
 }

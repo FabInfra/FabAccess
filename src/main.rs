@@ -12,15 +12,12 @@ mod api;
 mod config;
 mod error;
 mod machine;
-mod session;
 
 use signal_hook::iterator::Signals;
 
 use clap::{App, Arg};
 
 use api::api as api_capnp;
-
-use session::Session;
 
 use futures::prelude::*;
 use futures::executor::{LocalPool, ThreadPool};
